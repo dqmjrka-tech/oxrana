@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Охранный терминал</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: #0f1117; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 15px; }
+    .card { background: #1a1d26; border-radius: 14px; padding: 20px; width: 100%; max-width: 640px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); text-align: center; position: relative; }
+    h1 { font-size: 20px; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px; }
+    
+    .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 14px; margin: 8px 0; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: 0.2s; color: #fff; }
+    .btn-primary { background: #2563eb; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-danger { background: #dc2626; }
+    .btn-danger:hover { background: #b91c1c; }
+    .btn-success { background: #16a34a; }
+    .btn-success:hover { background: #15803d; }
+    .btn-cancel { background: #4b5563; }
+    .btn-cancel:hover { background: #374151; }
+    
+    .status-badge { display: inline-block; padding: 6px 14px; border-radius: 20px; font-size: 14px; font-weight: bold; margin-bottom: 12px; }
+    .status-disarmed { background: #374151; color: #9ca3af; }
+    .status-armed { background: #15803d; color: #4ade80; }
+    .status-alarm { background: #b91c1c; color: #f87171; animation: pulse 0.8s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    #cam-container { position: relative; width: 100%; max-width: 600px; height: 380px; margin: 10px auto; background: #000; border-radius: 8px; overflow: hidden; border: 2px solid #374151; }
+    video, #overlayCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+    #overlayCanvas { cursor: crosshair; }
+    .hidden { display: none !important; }
+    .hint { font-size: 13px; color: #9ca3af; margin: 6px 0; }
+
+    /* Панель чувствительности и шкала активности */
+    .settings-panel { display: flex; flex-direction: column; gap: 8px; background: #242938; padding: 12px 14px; border-radius: 8px; margin: 10px 0; font-size: 14px; }
+    .slider-row { display: flex; align-items: center; justify-content: space-between; }
+    .slider-container { display: flex; align-items: center; gap: 10px; width: 60%; }
+    input[type=range] { flex: 1; accent-color: #2563eb; cursor: pointer; }
+    
+    .motion-meter { width: 100%; height: 8px; background: #11141c; border-radius: 4px; overflow: hidden; position: relative; margin-top: 4px; }
+    .motion-bar { height: 100%; width: 0%; background: #22c55e; transition: width 0.1s linear, background-color 0.2s; }
+
+    /* Модальное окно PIN-кода */
+    .modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 999; }
+    .modal-box { background: #1f2430; border-radius: 12px; padding: 24px; width: 90%; max-width: 320px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.7); }
+    .pin-input { width: 100%; padding: 12px; font-size: 22px; text-align: center; letter-spacing: 8px; border: 2px solid #4b5563; border-radius: 8px; background: #11141c; color: #fff; margin: 15px 0; outline: none; }
+    .pin-input:focus { border-color: #2563eb; }
+    .pin-error { color: #f87171; font-size: 13px; margin-bottom: 10px; display: none; }
+  </style>
+
+  <!-- Firebase Scripts -->
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+</head>
+<body>
+
+  <!-- Меню старта -->
+  <div id="screen-menu" class="card">
+    <h1>Охранный комплекс</h1>
+    <p class="hint" style="margin-bottom: 20px;">Нажмите кнопку ниже, чтобы включить камеру и настроить зону наблюдения.</p>
+    <button class="btn btn-primary" onclick="startCameraSystem()">Запустить камеру</button>
+  </div>
+
+  <!-- Экран камеры и слежения -->
+  <div id="screen-camera" class="card hidden">
+    <div id="statusBadge" class="status-badge status-disarmed">СНЯТО С ОХРАНЫ</div>
+    <div class="hint">Выделите зону охраны прямоугольником на экране</div>
+
+    <div id="cam-container">
+      <video id="video" playsinline autoplay muted></video>
+      <canvas id="overlayCanvas"></canvas>
+    </div>
+
+    <!-- Регулировка чувствительности и индикатор детекции -->
+    <div class="settings-panel">
+      <div class="slider-row">
+        <span>Чувствительность:</span>
+        <div class="slider-container">
+          <input type="range" id="sensitivitySlider" min="1" max="10" value="7" oninput="updateSensitivity(this.value)">
+          <span id="sensValue" style="font-weight: bold; min-width: 25px;">7</span>
+        </div>
+      </div>
+      <div class="slider-row" style="font-size: 12px; color: #9ca3af;">
+        <span>Уровень изменений в зоне:</span>
+        <span id="meterText">0%</span>
+      </div>
+      <div class="motion-meter">
+        <div id="motionBar" class="motion-bar"></div>
+      </div>
+    </div>
+
+    <button id="toggleBtn" class="btn btn-success" onclick="handleArmButton()">Поставить на охрану</button>
+  </div>
+
+  <!-- Окно ввода пароля 0501 -->
+  <div id="pinModal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 style="margin-bottom: 6px;">Снятие с охраны</h3>
+      <div class="hint">Введите код доступа</div>
+      <input type="password" id="pinField" class="pin-input" maxlength="4" placeholder="••••" inputmode="numeric" />
+      <div id="pinError" class="pin-error">Неверный код!</div>
+      <button class="btn btn-danger" onclick="checkPin()">Подтвердить</button>
+      <button class="btn btn-cancel" onclick="closePinModal()">Отмена</button>
+    </div>
+  </div>
+
+  <canvas id="procCanvas" style="display:none;"></canvas>
+
+  <script>
+    const BOT_TOKEN = "8703298416:AAGTiQYxl9K2yPGtlWcAhbK-cVGFCcA5VO0";
+    const ADMIN_ID = "7567154840";
+    const SECRET_PIN = "0501";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyDRH07hc8tMsG1TvMyHOptrOTEJDp_4kE8",
+      authDomain: "clutch-shuter.firebaseapp.com",
+      databaseURL: "https://clutch-shuter-default-rtdb.firebaseio.com",
+      projectId: "clutch-shuter",
+      storageBucket: "clutch-shuter.firebasestorage.app",
+      messagingSenderId: "224141175517",
+      appId: "1:224141175517:web:2ed8bd5da35adc15dc4934",
+      measurementId: "G-DLJ39T1N88"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    let isArmed = false;
+    let isAlarming = false;
+    let sendingTelegram = false;
+
+    // Опорный фоновый кадр
+    let baseFrameData = null;
+    let prevFrameData = null;
+
+    // Порог детекции (динамический по слайдеру)
+    let motionThreshold = 0.035;
+
+    function updateSensitivity(val) {
+      document.getElementById("sensValue").innerText = val;
+      motionThreshold = 0.10 - (val * 0.0085);
+    }
+
+    let roi = { x: 0.15, y: 0.15, w: 0.7, h: 0.7 };
+    let isDrawing = false;
+    let startX = 0, startY = 0;
+
+    let video = document.getElementById("video");
+    let overlayCanvas = document.getElementById("overlayCanvas");
+    let ctx = overlayCanvas.getContext("2d");
+    let procCanvas = document.getElementById("procCanvas");
+    let pCtx = procCanvas.getContext("2d", { willReadFrequently: true });
+
+    let audioCtx = null;
+    let sirenOsc1 = null, sirenOsc2 = null;
+
+    function initAudio() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    }
+
+    function startSirenSound() {
+      if (sirenOsc1) return;
+      initAudio();
+      sirenOsc1 = audioCtx.createOscillator();
+      sirenOsc2 = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      sirenOsc1.type = 'sawtooth';
+      sirenOsc2.type = 'square';
+      gain.gain.setValueAtTime(0.35, audioCtx.currentTime);
+
+      sirenOsc1.connect(gain);
+      sirenOsc2.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      let up = true;
+      function modulate() {
+        if (!sirenOsc1) return;
+        const now = audioCtx.currentTime;
+        if (up) {
+          sirenOsc1.frequency.exponentialRampToValueAtTime(1350, now + 0.35);
+          sirenOsc2.frequency.exponentialRampToValueAtTime(900, now + 0.35);
+        } else {
+          sirenOsc1.frequency.exponentialRampToValueAtTime(650, now + 0.35);
+          sirenOsc2.frequency.exponentialRampToValueAtTime(450, now + 0.35);
+        }
+        up = !up;
+        setTimeout(modulate, 360);
+      }
+
+      sirenOsc1.start();
+      sirenOsc2.start();
+      modulate();
+    }
+
+    function stopSirenSound() {
+      if (sirenOsc1) {
+        try { sirenOsc1.stop(); sirenOsc2.stop(); } catch(e){}
+        sirenOsc1 = null;
+        sirenOsc2 = null;
+      }
+    }
+
+    async function startCameraSystem() {
+      initAudio();
+      document.getElementById("screen-menu").classList.add("hidden");
+      document.getElementById("screen-camera").classList.remove("hidden");
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "environment" },
+          audio: false
+        });
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          overlayCanvas.width = video.videoWidth || 640;
+          overlayCanvas.height = video.videoHeight || 480;
+          procCanvas.width = 160;
+          procCanvas.height = 120;
+          updateSensitivity(document.getElementById("sensitivitySlider").value);
+          drawOverlay();
+          requestAnimationFrame(processLoop);
+        };
+      } catch (err) {
+        alert("Ошибка доступа к камере: " + err.message);
+      }
+    }
+
+    function drawOverlay() {
+      ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      const rx = roi.x * overlayCanvas.width;
+      const ry = roi.y * overlayCanvas.height;
+      const rw = roi.w * overlayCanvas.width;
+      const rh = roi.h * overlayCanvas.height;
+
+      ctx.strokeStyle = isArmed ? (isAlarming ? "#ef4444" : "#22c55e") : "#3b82f6";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(rx, ry, rw, rh);
+      ctx.fillStyle = isAlarming ? "rgba(239, 68, 68, 0.25)" : "rgba(37, 99, 235, 0.15)";
+      ctx.fillRect(rx, ry, rw, rh);
+
+      ctx.fillStyle = "#fff";
+      ctx.font = "14px sans-serif";
+      ctx.fillText(isArmed ? "ЗОНА ОХРАНЫ" : "ВЫДЕЛЕННАЯ ЗОНА", rx + 8, ry > 20 ? ry - 6 : ry + 18);
+    }
+
+    function getCanvasCoords(e) {
+      const rect = overlayCanvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return {
+        x: (clientX - rect.left) / rect.width,
+        y: (clientY - rect.top) / rect.height
+      };
+    }
+
+    overlayCanvas.addEventListener("mousedown", (e) => {
+      isDrawing = true;
+      const c = getCanvasCoords(e);
+      startX = c.x; startY = c.y;
+      roi = { x: startX, y: startY, w: 0.01, h: 0.01 };
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!isDrawing) return;
+      const c = getCanvasCoords(e);
+      roi.x = Math.max(0, Math.min(startX, c.x));
+      roi.y = Math.max(0, Math.min(startY, c.y));
+      roi.w = Math.min(1 - roi.x, Math.abs(c.x - startX));
+      roi.h = Math.min(1 - roi.y, Math.abs(c.y - startY));
+      drawOverlay();
+    });
+
+    window.addEventListener("mouseup", () => {
+      if (isDrawing) {
+        isDrawing = false;
+        if (roi.w < 0.05 || roi.h < 0.05) roi = { x: 0.15, y: 0.15, w: 0.7, h: 0.7 };
+        drawOverlay();
+        if (isArmed) captureBaseFrame();
+      }
+    });
+
+    function captureBaseFrame() {
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        pCtx.drawImage(video, 0, 0, procCanvas.width, procCanvas.height);
+        baseFrameData = pCtx.getImageData(0, 0, procCanvas.width, procCanvas.height);
+      }
+    }
+
+    function processLoop() {
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        pCtx.drawImage(video, 0, 0, procCanvas.width, procCanvas.height);
+        const frame = pCtx.getImageData(0, 0, procCanvas.width, procCanvas.height);
+
+        if (isArmed && baseFrameData) {
+          const rx = Math.floor(roi.x * procCanvas.width);
+          const ry = Math.floor(roi.y * procCanvas.height);
+          const rw = Math.floor(roi.w * procCanvas.width);
+          const rh = Math.floor(roi.h * procCanvas.height);
+
+          let diffPoints = 0;
+          let totalChecked = 0;
+          const pixelDiffThreshold = 22;
+
+          for (let y = ry; y < ry + rh; y++) {
+            for (let x = rx; x < rx + rw; x++) {
+              const idx = (y * procCanvas.width + x) * 4;
+
+              const bgDiff = (
+                Math.abs(frame.data[idx]   - baseFrameData.data[idx]) +
+                Math.abs(frame.data[idx+1] - baseFrameData.data[idx+1]) +
+                Math.abs(frame.data[idx+2] - baseFrameData.data[idx+2])
+              ) / 3;
+
+              let deltaDiff = 0;
+              if (prevFrameData) {
+                deltaDiff = (
+                  Math.abs(frame.data[idx]   - prevFrameData.data[idx]) +
+                  Math.abs(frame.data[idx+1] - prevFrameData.data[idx+1]) +
+                  Math.abs(frame.data[idx+2] - prevFrameData.data[idx+2])
+                ) / 3;
+              }
+
+              if (bgDiff > pixelDiffThreshold || deltaDiff > pixelDiffThreshold) {
+                diffPoints++;
+              }
+              totalChecked++;
+            }
+          }
+
+          const ratio = diffPoints / (totalChecked || 1);
+          updateMotionMeter(ratio);
+
+          if (ratio > motionThreshold && !isAlarming) {
+            triggerAlarm();
+          }
+        } else {
+          updateMotionMeter(0);
+        }
+        prevFrameData = frame;
+      }
+      requestAnimationFrame(processLoop);
+    }
+
+    function updateMotionMeter(ratio) {
+      const bar = document.getElementById("motionBar");
+      const text = document.getElementById("meterText");
+      const percent = Math.min(100, Math.round(ratio * 300));
+      bar.style.width = percent + "%";
+      text.innerText = percent + "%";
+
+      if (ratio > motionThreshold) {
+        bar.style.backgroundColor = "#ef4444";
+      } else {
+        bar.style.backgroundColor = "#22c55e";
+      }
+    }
+
+    // Срабатывание тревоги
+    async function triggerAlarm() {
+      isAlarming = true;
+      startSirenSound();
+      updateStatusUI();
+      db.ref("alarm_system/status").update({ state: "alarm", lastTriggered: Date.now() });
+
+      // Запускаем непрерывную съемку каждые 0.3 сек (20 кадров)
+      sendLiveSeriesToTelegram();
+    }
+
+    // Съемка каждые 0.3 сек и отправка 20 свежих кадров подряд
+    async function sendLiveSeriesToTelegram() {
+      if (sendingTelegram) return;
+      sendingTelegram = true;
+
+      for (let i = 1; i <= 20; i++) {
+        if (!isAlarming) break; // остановка при снятии с охраны
+
+        try {
+          const photoBlob = await captureBlobWithTimestamp(`ТРЕВОГА ДВИЖЕНИЯ [${i}/20]`);
+          const nowStr = new Date().toLocaleString("ru-RU");
+
+          const formData = new FormData();
+          formData.append("chat_id", ADMIN_ID);
+          formData.append("photo", photoBlob, `alarm_shot_${i}_${Date.now()}.jpg`);
+          formData.append("caption", `🚨 ТРЕВОГА! Кадр ${i}/20\n⏱ Время: ${nowStr}\nИнтервал: 0.3 сек`);
+
+          fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+            method: "POST",
+            body: formData
+          }).catch(err => console.error("Ошибка TG:", err));
+
+        } catch (err) {
+          console.error("Ошибка захвата кадра:", err);
+        }
+
+        // Ждем ровно 0.3 секунды до следующего фото
+        await new Promise(r => setTimeout(r, 300));
+      }
+
+      sendingTelegram = false;
+    }
+
+    function captureBlobWithTimestamp(label) {
+      return new Promise((resolve) => {
+        const c = document.createElement("canvas");
+        c.width = video.videoWidth || 640;
+        c.height = video.videoHeight || 480;
+        const ctxSnap = c.getContext("2d");
+
+        ctxSnap.drawImage(video, 0, 0, c.width, c.height);
+
+        const now = new Date();
+        const timeStr = `${now.toLocaleDateString("ru-RU")} ${now.toLocaleTimeString("ru-RU")}.${String(now.getMilliseconds()).padStart(3, '0')}`;
+        
+        ctxSnap.fillStyle = "rgba(0, 0, 0, 0.65)";
+        ctxSnap.fillRect(0, c.height - 40, c.width, 40);
+        ctxSnap.fillStyle = "#ff4444";
+        ctxSnap.font = "bold 18px sans-serif";
+        ctxSnap.fillText(`⚠️ ${label} | ${timeStr}`, 15, c.height - 14);
+
+        c.toBlob((blob) => resolve(blob), "image/jpeg", 0.85);
+      });
+    }
+
+    async function captureAndUpload(label = "СКРИНШОТ С ПУЛЬТА") {
+      const blob = await captureBlobWithTimestamp(label);
+      const reader = new FileReader();
+      reader.onloadend = function () {
+        db.ref("alarm_system/snapshot").set({
+          image: reader.result,
+          timestamp: Date.now(),
+          timeText: new Date().toLocaleString("ru-RU")
+        });
+      };
+      reader.readAsDataURL(blob);
+    }
+
+    function handleArmButton() {
+      if (isArmed || isAlarming) {
+        openPinModal();
+      } else {
+        armSystem();
+      }
+    }
+
+    function openPinModal() {
+      const modal = document.getElementById("pinModal");
+      const field = document.getElementById("pinField");
+      document.getElementById("pinError").style.display = "none";
+      field.value = "";
+      modal.classList.remove("hidden");
+      field.focus();
+    }
+
+    function closePinModal() {
+      document.getElementById("pinModal").classList.add("hidden");
+    }
+
+    function checkPin() {
+      const input = document.getElementById("pinField").value;
+      if (input === SECRET_PIN) {
+        closePinModal();
+        disarmSystem();
+      } else {
+        document.getElementById("pinError").style.display = "block";
+        document.getElementById("pinField").value = "";
+        document.getElementById("pinField").focus();
+      }
+    }
+
+    document.getElementById("pinField").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") checkPin();
+    });
+
+    function armSystem() {
+      isArmed = true;
+      isAlarming = false;
+      stopSirenSound();
+      updateStatusUI();
+
+      setTimeout(() => {
+        captureBaseFrame();
+      }, 500);
+
+      db.ref("alarm_system/status").set({ state: "armed" });
+    }
+
+    function disarmSystem() {
+      isArmed = false;
+      isAlarming = false;
+      stopSirenSound();
+      baseFrameData = null;
+      updateStatusUI();
+      db.ref("alarm_system/status").set({ state: "disarmed" });
+    }
+
+    function updateStatusUI() {
+      const badge = document.getElementById("statusBadge");
+      const btn = document.getElementById("toggleBtn");
+
+      if (isAlarming) {
+        badge.className = "status-badge status-alarm";
+        badge.innerText = "🚨 ТРЕВОГА!";
+        btn.className = "btn btn-danger";
+        btn.innerText = "Снять с охраны (PIN)";
+      } else if (isArmed) {
+        badge.className = "status-badge status-armed";
+        badge.innerText = "● ПОД ОХРАНОЙ";
+        btn.className = "btn btn-danger";
+        btn.innerText = "Снять с охраны (PIN)";
+      } else {
+        badge.className = "status-badge status-disarmed";
+        badge.innerText = "СНЯТО С ОХРАНЫ";
+        btn.className = "btn btn-success";
+        btn.innerText = "Поставить на охрану";
+      }
+      drawOverlay();
+    }
+
+    // Слушатели Firebase
+    db.ref("alarm_system/status").on("value", (snap) => {
+      const data = snap.val();
+      if (!data) return;
+      if (data.state === "armed" && !isArmed) armSystem();
+      if (data.state === "disarmed" && (isArmed || isAlarming)) disarmSystem();
+    });
+
+    // Обработка удаленного снимка по запросу с remote.html
+    db.ref("alarm_system/requestSnapshot").on("value", (snap) => {
+      if (snap.val() && video.readyState === video.HAVE_ENOUGH_DATA) {
+        captureAndUpload("СКРИНШОТ С ПУЛЬТА");
+        db.ref("alarm_system/requestSnapshot").set(null);
+      }
+    });
+  </script>
+</body>
+</html>
