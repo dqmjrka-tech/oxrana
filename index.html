@@ -5,10 +5,10 @@
   <title>Пульт дистанционного управления</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, sans-serif; }
     body { background: #0f1117; color: #fff; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 15px; }
     .card { background: #1a1d26; border-radius: 14px; padding: 24px; width: 100%; max-width: 440px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); text-align: center; }
-    h1 { font-size: 19px; margin-bottom: 18px; text-transform: uppercase; letter-spacing: 1px; color: #9ca3af; }
+    h1 { font-size: 19px; margin-bottom: 18px; text-transform: uppercase; color: #9ca3af; }
     
     .status-box { padding: 12px; border-radius: 8px; font-weight: bold; margin-bottom: 20px; font-size: 16px; }
     .status-disarmed { background: #374151; color: #9ca3af; }
@@ -16,19 +16,16 @@
     .status-alarm { background: #991b1b; color: #fca5a5; animation: pulse 0.8s infinite; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-    .btn { display: block; width: 100%; padding: 16px; margin: 12px 0; border: none; border-radius: 8px; font-size: 16px; font-weight: 700; cursor: pointer; transition: 0.2s; color: #fff; }
+    .btn { display: block; width: 100%; padding: 16px; margin: 10px 0; border: none; border-radius: 8px; font-size: 16px; font-weight: 700; cursor: pointer; color: #fff; transition: 0.2s; }
     .btn-arm { background: #16a34a; }
-    .btn-arm:hover { background: #15803d; }
     .btn-disarm { background: #dc2626; }
-    .btn-disarm:hover { background: #b91c1c; }
-    .btn-snap { background: #2563eb; }
-    .btn-snap:hover { background: #1d4ed8; }
+    .btn-view { background: #2563eb; }
+    .btn-listen { background: #9333ea; }
+    .btn-active { background: #eab308; color: #000; box-shadow: 0 0 12px rgba(234, 179, 8, 0.4); }
 
-    #snapPreview { width: 100%; border-radius: 8px; margin-top: 15px; border: 1px solid #374151; display: none; }
-    .timestamp { font-size: 13px; color: #9ca3af; margin-top: 6px; }
+    #livePreview { width: 100%; border-radius: 8px; margin-top: 15px; border: 2px solid #374151; display: none; object-fit: cover; }
+    .indicator { display: inline-block; width: 8px; height: 8px; background: red; border-radius: 50%; margin-right: 6px; animation: pulse 1s infinite; }
   </style>
-
-  <!-- Firebase Scripts -->
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 </head>
@@ -40,11 +37,17 @@
 
     <button class="btn btn-arm" onclick="setMode('armed')">На охрану</button>
     <button class="btn btn-disarm" onclick="setMode('disarmed')">Снять с охраны</button>
-    <button class="btn btn-snap" onclick="requestScreenshot()">Сделать скриншот</button>
+    
+    <button id="btnView" class="btn btn-view" onclick="toggleLiveView()">Online просмотр</button>
+    <button id="btnListen" class="btn btn-listen" onclick="toggleListen()">Прослушка (Выкл)</button>
 
-    <img id="snapPreview" alt="Скриншот с камеры">
-    <div id="snapTime" class="timestamp"></div>
+    <div id="liveContainer" style="display:none; margin-top: 15px;">
+      <div style="font-size: 13px; color: #9ca3af; text-align: left; margin-bottom: 5px;"><span class="indicator"></span>LIVE (5 FPS)</div>
+      <img id="livePreview" alt="Прямая трансляция">
+    </div>
   </div>
+
+  <audio id="remoteAudio" autoplay controls style="display: none;"></audio>
 
   <script>
     const firebaseConfig = {
@@ -54,8 +57,7 @@
       projectId: "clutch-shuter",
       storageBucket: "clutch-shuter.firebasestorage.app",
       messagingSenderId: "224141175517",
-      appId: "1:224141175517:web:2ed8bd5da35adc15dc4934",
-      measurementId: "G-DLJ39T1N88"
+      appId: "1:224141175517:web:2ed8bd5da35adc15dc4934"
     };
 
     firebase.initializeApp(firebaseConfig);
@@ -65,38 +67,112 @@
       db.ref("alarm_system/status").set({ state: state, updatedAt: Date.now() });
     }
 
-    function requestScreenshot() {
-      db.ref("alarm_system/requestSnapshot").set(Date.now());
-    }
-
-    // Слушатель статуса
-    db.ref("alarm_system/status").on("value", (snap) => {
-      const data = snap.val();
-      const box = document.getElementById("statusBox");
+    db.ref("alarm_system/status").on("value", snap => {
+      const data = snap.val(), box = document.getElementById("statusBox");
       if (!data) return;
-
-      if (data.state === "alarm") {
-        box.className = "status-box status-alarm";
-        box.innerText = "🚨 ТРЕВОГА!";
-      } else if (data.state === "armed") {
-        box.className = "status-box status-armed";
-        box.innerText = "● ПОД ОХРАНОЙ";
-      } else {
-        box.className = "status-box status-disarmed";
-        box.innerText = "СНЯТО С ОХРАНЫ";
-      }
+      if (data.state === "alarm") { box.className = "status-box status-alarm"; box.innerText = "🚨 ТРЕВОГА!"; }
+      else if (data.state === "armed") { box.className = "status-box status-armed"; box.innerText = "● ПОД ОХРАНОЙ"; }
+      else { box.className = "status-box status-disarmed"; box.innerText = "СНЯТО С ОХРАНЫ"; }
     });
 
-    // Слушатель получения снимка
-    db.ref("alarm_system/snapshot").on("value", (snap) => {
-      const data = snap.val();
-      if (!data || !data.image) return;
+    let isViewing = false;
+    function toggleLiveView() {
+      isViewing = !isViewing;
+      db.ref("alarm_system/liveViewActive").set(isViewing);
+      const btn = document.getElementById("btnView");
+      const container = document.getElementById("liveContainer");
+      const img = document.getElementById("livePreview");
+      
+      if (isViewing) {
+        btn.innerText = "Остановить просмотр"; btn.className = "btn btn-active";
+        container.style.display = "block"; img.style.display = "block";
+      } else {
+        btn.innerText = "Online просмотр"; btn.className = "btn btn-view";
+        container.style.display = "none"; img.style.display = "none";
+      }
+    }
 
-      const img = document.getElementById("snapPreview");
-      const timeBox = document.getElementById("snapTime");
-      img.src = data.image;
-      img.style.display = "block";
-      timeBox.innerText = `Снимок сделан: ${data.timeText || new Date(data.timestamp).toLocaleString("ru-RU")}`;
+    db.ref("alarm_system/liveFrame").on("value", snap => {
+      if (isViewing && snap.val()) document.getElementById("livePreview").src = snap.val();
+    });
+
+    // ПОСТОЯННАЯ ПРОСЛУШКА (СТАБИЛЬНАЯ)
+    let isListening = false;
+    let peerConnection = null;
+    let pendingCandidates = [];
+
+    async function toggleListen() {
+      const btn = document.getElementById("btnListen");
+      if (isListening) {
+        if (peerConnection) peerConnection.close();
+        peerConnection = null;
+        db.ref("alarm_system/webrtc").remove();
+        isListening = false;
+        btn.innerText = "Прослушка (Выкл)"; btn.className = "btn btn-listen";
+        document.getElementById("remoteAudio").srcObject = null;
+      } else {
+        startWebRTCConnection();
+      }
+    }
+
+    async function startWebRTCConnection() {
+      const btn = document.getElementById("btnListen");
+      btn.innerText = "Подключение..."; btn.className = "btn btn-active";
+      isListening = true;
+      pendingCandidates = [];
+
+      await db.ref("alarm_system/webrtc").remove(); 
+
+      peerConnection = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      peerConnection.addTransceiver('audio', { direction: 'recvonly' });
+
+      peerConnection.ontrack = e => {
+        document.getElementById("remoteAudio").srcObject = e.streams[0];
+        btn.innerText = "Прослушка (В эфире)";
+      };
+
+      // Логика авто-переподключения при обрыве сети
+      peerConnection.oniceconnectionstatechange = () => {
+        if (peerConnection.iceConnectionState === "disconnected" || peerConnection.iceConnectionState === "failed") {
+          if (isListening) {
+            btn.innerText = "Переподключение...";
+            setTimeout(startWebRTCConnection, 1500); // Пробуем заново
+          }
+        }
+      };
+
+      peerConnection.onicecandidate = e => {
+        if (e.candidate) db.ref("alarm_system/webrtc/candidates/remote").push(e.candidate.toJSON());
+      };
+
+      db.ref("alarm_system/webrtc/answer").on("value", async snap => {
+        const answer = snap.val();
+        if (answer && peerConnection.signalingState !== "stable") {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+          pendingCandidates.forEach(c => peerConnection.addIceCandidate(new RTCIceCandidate(c)));
+          pendingCandidates = [];
+        }
+      });
+
+      db.ref("alarm_system/webrtc/candidates/terminal").on("child_added", s => {
+        const candidate = s.val();
+        if (candidate) {
+          if (peerConnection.remoteDescription) {
+            peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
+          } else {
+            pendingCandidates.push(candidate);
+          }
+        }
+      });
+
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      db.ref("alarm_system/webrtc/offer").set({ type: offer.type, sdp: offer.sdp });
+    }
+
+    window.addEventListener("beforeunload", () => {
+      db.ref("alarm_system/liveViewActive").set(false);
+      db.ref("alarm_system/webrtc").remove();
     });
   </script>
 </body>
